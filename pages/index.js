@@ -2,8 +2,7 @@ import { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase'
 
 export default function Index() {
-  const tickers = ['SPY', 'ES', 'MES']
-
+  const tickers = ['SPY','ES', 'MES']
 
   const [barsByTicker, setBarsByTicker] = useState({})
   const [liveBars, setLiveBars] = useState([])
@@ -99,7 +98,6 @@ export default function Index() {
                           <th className="text-right p-3 text-gray-400">Avg 20D</th>
                           <th className="text-right p-3 text-gray-400">Z-Score</th>
                           <th className="text-right p-3 text-gray-400">Ratio</th>
-                          <th className="text-right p-3 text-gray-400">Rel. Flow</th>
                           <th className="text-left p-3 text-gray-400">Session</th>
                         </tr>
                       </thead>
@@ -125,7 +123,7 @@ export default function Index() {
                             </td>
 
                             <td className="text-right p-3 font-bold">
-                              ${currentLiveBar.close?.toFixed(2)}
+                              {currentLiveBar.close?.toFixed(2)}
                             </td>
 
                             <td className={`text-right p-3 font-bold ${
@@ -158,10 +156,6 @@ export default function Index() {
                               {currentLiveBar.est_vol_at_close
                                 ? `${(currentLiveBar.est_vol_at_close * 100).toFixed(0)}%`
                                 : 'N/A'}
-                            </td>
-
-                            <td className="text-right p-3 font-bold text-blue-300">
-                              {currentLiveBar.relative_flow?.toFixed(2) || 'N/A'}
                             </td>
 
                             <td className="p-3">
@@ -204,7 +198,7 @@ export default function Index() {
                             </td>
 
                             <td className="text-right p-3">
-                              ${bar.close?.toFixed(2)}
+                              {bar.close?.toFixed(2)}
                             </td>
 
                             <td className={`text-right p-3 font-bold ${
@@ -233,10 +227,6 @@ export default function Index() {
 
                             <td className="text-right p-3">
                               {(bar.ratio_to_avg_20d * 100)?.toFixed(0)}%
-                            </td>
-
-                            <td className="text-right p-3 text-gray-500">
-                              {bar.relative_flow?.toFixed(2) || '—'}
                             </td>
 
                             <td className="p-3">

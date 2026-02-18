@@ -2,12 +2,12 @@ import { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase'
 
 export default function Index() {
-  const tickers = ['SPY','ES', 'MES']
+  const tickers = ['SPY', 'ES', 'MES']
 
   const [barsByTicker, setBarsByTicker] = useState({})
   const [liveBars, setLiveBars] = useState([])
   const [loading, setLoading] = useState(true)
-  const [activeTab, setActiveTab] = useState('volume')
+  const [activeTab] = useState('volume')
 
   useEffect(() => {
     fetchData()
@@ -67,7 +67,7 @@ export default function Index() {
         <div className="mb-6">
           <h1 className="text-4xl font-bold mb-2">Trading Dashboard</h1>
           <p className="text-gray-400">
-            Timeband-based volume analytics
+            Timeband-based volume analytics + order flow
           </p>
         </div>
 
@@ -93,7 +93,9 @@ export default function Index() {
                           <th className="text-left p-3 text-gray-400">Time</th>
                           <th className="text-left p-3 text-gray-400">Band</th>
                           <th className="text-right p-3 text-gray-400">Volume</th>
-                          <th className="text-right p-3 text-gray-400">Close</th>
+                          <th className="text-right p-3 text-gray-400">Buy</th>
+                          <th className="text-right p-3 text-gray-400">Sell</th>
+                          <th className="text-right p-3 text-gray-400">Delta</th>
                           <th className="text-right p-3 text-gray-400">% Chg</th>
                           <th className="text-right p-3 text-gray-400">Avg 20D</th>
                           <th className="text-right p-3 text-gray-400">Z-Score</th>
@@ -107,6 +109,7 @@ export default function Index() {
                         {/* LIVE ROW */}
                         {currentLiveBar && (
                           <tr className="border-b-2 border-blue-500 bg-gradient-to-r from-blue-900/40 to-blue-800/40">
+                            {/* 1. Time */}
                             <td className="p-3 font-bold">
                               <div className="flex items-center gap-2">
                                 <span className="w-2 h-2 bg-green-400 rounded-full animate-pulse"></span>
@@ -114,18 +117,40 @@ export default function Index() {
                               </div>
                             </td>
 
+                            {/* 2. Band */}
                             <td className="p-3 font-mono font-bold">
-                              {currentLiveBar.band || currentLiveBar.timeband}
+                              {currentLiveBar.timeband}
                             </td>
 
+                            {/* 3. Volume */}
                             <td className="text-right p-3 font-bold text-blue-300">
                               {currentLiveBar.volume?.toLocaleString()}
                             </td>
 
-                            <td className="text-right p-3 font-bold">
-                              {currentLiveBar.close?.toFixed(2)}
+                            {/* 4. Buy */}
+                            <td className="text-right p-3">
+                              {currentLiveBar.buy_volume?.toLocaleString() || '-'}
                             </td>
 
+                            {/* 5. Sell */}
+                            <td className="text-right p-3">
+                              {currentLiveBar.sell_volume?.toLocaleString() || '-'}
+                            </td>
+
+                            {/* 6. Delta */}
+                            <td className={`text-right p-3 font-bold ${
+                              (currentLiveBar.delta || 0) > 0
+                                ? 'text-green-400'
+                                : (currentLiveBar.delta || 0) < 0
+                                  ? 'text-red-400'
+                                  : 'text-gray-400'
+                            }`}>
+                              {currentLiveBar.delta && currentLiveBar.volume
+                                ? `${currentLiveBar.delta.toLocaleString()} (${((currentLiveBar.delta / currentLiveBar.volume) * 100).toFixed(0)}%)`
+                                : '-'}
+                            </td>
+
+                            {/* 7. % Chg */}
                             <td className={`text-right p-3 font-bold ${
                               ((currentLiveBar.close - currentLiveBar.open) /
                                 currentLiveBar.open * 100) >= 0
@@ -138,10 +163,12 @@ export default function Index() {
                                 : 'N/A'}
                             </td>
 
+                            {/* 8. Avg 20D */}
                             <td className="text-right p-3 text-gray-400">
                               {currentLiveBar.avg_20d?.toLocaleString(undefined, { maximumFractionDigits: 0 })}
                             </td>
 
+                            {/* 9. Z-Score */}
                             <td className={`text-right p-3 font-bold ${
                               Math.abs(currentLiveBar.projected_zscore || 0) > 2
                                 ? 'text-red-400'
@@ -152,12 +179,14 @@ export default function Index() {
                               {currentLiveBar.projected_zscore?.toFixed(2) || 'N/A'}
                             </td>
 
+                            {/* 10. Ratio */}
                             <td className="text-right p-3 font-bold text-blue-300">
                               {currentLiveBar.est_vol_at_close
                                 ? `${(currentLiveBar.est_vol_at_close * 100).toFixed(0)}%`
                                 : 'N/A'}
                             </td>
 
+                            {/* 11. Session */}
                             <td className="p-3">
                               <span className={`px-2 py-1 rounded text-xs font-semibold ${
                                 currentLiveBar.session === 'RTH'
@@ -176,6 +205,7 @@ export default function Index() {
                             key={idx}
                             className="border-b border-gray-700 hover:bg-gray-750 transition-colors"
                           >
+                            {/* 1. Time */}
                             <td className="p-3 text-sm">
                               {new Date(bar.timestamp).toLocaleString(
                                 'en-US',
@@ -189,18 +219,40 @@ export default function Index() {
                               )}
                             </td>
 
+                            {/* 2. Band */}
                             <td className="p-3 font-mono">
-                              {bar.band || bar.timeband}
+                              {bar.timeband}
                             </td>
 
+                            {/* 3. Volume */}
                             <td className="text-right p-3 font-semibold">
                               {bar.volume?.toLocaleString()}
                             </td>
 
+                            {/* 4. Buy */}
                             <td className="text-right p-3">
-                              {bar.close?.toFixed(2)}
+                              {bar.buy_volume?.toLocaleString() || '-'}
                             </td>
 
+                            {/* 5. Sell */}
+                            <td className="text-right p-3">
+                              {bar.sell_volume?.toLocaleString() || '-'}
+                            </td>
+
+                            {/* 6. Delta */}
+                            <td className={`text-right p-3 font-bold ${
+                              (bar.delta || 0) > 0
+                                ? 'text-green-400'
+                                : (bar.delta || 0) < 0
+                                  ? 'text-red-400'
+                                  : 'text-gray-400'
+                            }`}>
+                              {bar.delta && bar.volume
+                                ? `${bar.delta.toLocaleString()} (${((bar.delta / bar.volume) * 100).toFixed(0)}%)`
+                                : '-'}
+                            </td>
+
+                            {/* 7. % Chg */}
                             <td className={`text-right p-3 font-bold ${
                               ((bar.close - bar.open) / bar.open * 100) >= 0
                                 ? 'text-green-400'
@@ -211,10 +263,12 @@ export default function Index() {
                                 : 'N/A'}
                             </td>
 
+                            {/* 8. Avg 20D */}
                             <td className="text-right p-3 text-gray-400 text-sm">
                               {bar.avg_20d?.toLocaleString(undefined, { maximumFractionDigits: 0 })}
                             </td>
 
+                            {/* 9. Z-Score */}
                             <td className={`text-right p-3 font-bold ${
                               Math.abs(bar.zscore_20d || 0) > 2
                                 ? 'text-red-400'
@@ -225,10 +279,14 @@ export default function Index() {
                               {bar.zscore_20d?.toFixed(2) || 'N/A'}
                             </td>
 
+                            {/* 10. Ratio */}
                             <td className="text-right p-3">
-                              {(bar.ratio_to_avg_20d * 100)?.toFixed(0)}%
+                              {bar.ratio_to_avg_20d
+                                ? `${(bar.ratio_to_avg_20d * 100).toFixed(0)}%`
+                                : 'N/A'}
                             </td>
 
+                            {/* 11. Session */}
                             <td className="p-3">
                               <span className={`px-2 py-1 rounded text-xs font-semibold ${
                                 bar.session === 'RTH'

@@ -1,9 +1,86 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useRef, memo } from 'react'
 import { supabase } from '../lib/supabase'
-import {
-  ComposedChart, Bar, Line, XAxis, YAxis, CartesianGrid, Tooltip,
-  ReferenceLine, ResponsiveContainer, Cell, Legend
-} from 'recharts'
+import * as ChartJS from 'chart.js'
+ChartJS.Chart.register(...ChartJS.registerables)
+
+// ─────────────────────────────────────────────────────────────
+// DEALERCHART — Chart.js imperative, never remounts canvas
+// Updates data in-place via chart.update('none') — no flash
+// ─────────────────────────────────────────────────────────────
+const DealerChart = memo(function DealerChart({ title, caption, chartData, spot, config }) {
+  const canvasRef = useRef(null)
+  const chartRef  = useRef(null)
+
+  // Init once on mount
+  useEffect(() => {
+    if (!canvasRef.current) return
+    chartRef.current = new ChartJS.Chart(canvasRef.current, {
+      type: 'bar',
+      data: { labels: [], datasets: config.datasets.map(d => ({ ...d, data: [] })) },
+      options: {
+        animation: false,
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { display: config.legend ?? false, labels: { color: '#9ca3af', font: { size: 11 } } },
+          tooltip: {
+            callbacks: {
+              label: ctx => {
+                const v = ctx.parsed.y
+                return config.tooltipFmt ? config.tooltipFmt(v, ctx.dataset.label) : `${ctx.dataset.label}: ${v}`
+              }
+            },
+            backgroundColor: '#1f2937', titleColor: '#f9fafb', bodyColor: '#d1d5db',
+            borderColor: '#374151', borderWidth: 1,
+          },
+        },
+        scales: {
+          x: { ticks: { color: '#9ca3af', font: { size: 10 }, maxRotation: 0 }, grid: { color: '#374151' } },
+          y: {
+            ticks: {
+              color: '#9ca3af', font: { size: 10 },
+              callback: config.yFmt || (v => v)
+            },
+            grid: { color: '#374151' }
+          },
+        },
+      },
+    })
+    return () => { chartRef.current?.destroy(); chartRef.current = null }
+  }, [])
+
+  // Update data imperatively — no remount, no flash
+  useEffect(() => {
+    const chart = chartRef.current
+    if (!chart || !chartData?.length) return
+
+    chart.data.labels = chartData.map(r => r.strike.toFixed(0))
+
+    config.datasets.forEach((cfg, i) => {
+      chart.data.datasets[i].data           = chartData.map(r => r[cfg.key])
+      chart.data.datasets[i].backgroundColor = typeof cfg.color === 'function'
+        ? chartData.map(r => cfg.color(r[cfg.key]))
+        : cfg.color
+    })
+
+    // Spot reference line via annotation plugin or just re-set via custom afterDraw
+    chart.options.plugins.spotLine = spot
+    chart.update('none')
+  }, [chartData, spot])
+
+  return (
+    <div className="bg-gray-800 rounded-lg p-5">
+      <h3 className="font-bold text-white mb-0.5">{title}</h3>
+      <p className="text-gray-400 text-xs mb-4">{caption}</p>
+      <div style={{ height: 240, position: 'relative' }}>
+        {!chartData?.length && (
+          <div className="absolute inset-0 bg-gray-700 rounded animate-pulse" />
+        )}
+        <canvas ref={canvasRef} style={{ opacity: chartData?.length ? 1 : 0 }} />
+      </div>
+    </div>
+  )
+})
 
 // ─────────────────────────────────────────────────────────────
 // GAP STATS COMPUTATION HELPERS
@@ -308,6 +385,7 @@ function DistStatsTable({ data, prefix = '', typeColor }) {
 
 export default function Index() {
   const tickers = ['SPY', 'ES', 'MES']
+  const chartTimestampRef = useRef(null)
 
   const [barsByTicker, setBarsByTicker] = useState({})
   const [liveBars, setLiveBars] = useState([])
@@ -342,39 +420,57 @@ export default function Index() {
   const [optionsExpiry, setOptionsExpiry] = useState('all')
 
   // Computed dealer exposure charts (GEX + delta) by strike
+  const lastGoodChartData = useRef([])
   const exposureChartData = useMemo(() => {
-    if (!allOiData.length || !allGreeksData.length) return []
+    if (!allOiData.length || !allGreeksData.length) return lastGoodChartData.current
     const spot = allGreeksData[0]?.spot || 1
     const greeksMap = {}
     allGreeksData.forEach(r => { greeksMap[`${r.strike}_${r.side}`] = r })
     const byStrike = {}
     allOiData.forEach(r => {
       const g = greeksMap[`${r.strike}_${r.side}`]
-      if (!byStrike[r.strike]) byStrike[r.strike] = { strike: r.strike, callGEX: 0, putGEX: 0, callDelta: 0, putDelta: 0, callOI: 0, putOI: 0 }
+      if (!byStrike[r.strike]) byStrike[r.strike] = {
+        strike: r.strike,
+        callGEX: 0, putGEX: 0,
+        callDelta: 0, putDelta: 0,
+        callVega: 0, putVega: 0,
+        callTheta: 0, putTheta: 0,
+        callOI: 0, putOI: 0
+      }
       const oi = r.open_interest || 0
-      const gex = (g?.gamma || 0) * oi * 100 * spot
-      const dex = (g?.delta || 0) * oi * 100
+      const gex   = (g?.gamma || 0) * oi * 100 * spot
+      const dex   = (g?.delta || 0) * oi * 100
+      const vex   = (g?.vega  || 0) * oi * 100
+      const tex   = (g?.theta || 0) * oi * 100
       if (r.side === 'C') {
         byStrike[r.strike].callGEX   += gex
         byStrike[r.strike].callDelta += dex
+        byStrike[r.strike].callVega  += vex
+        byStrike[r.strike].callTheta += tex
         byStrike[r.strike].callOI    += oi
       } else {
         byStrike[r.strike].putGEX   += gex
         byStrike[r.strike].putDelta += dex
+        byStrike[r.strike].putVega  += vex
+        byStrike[r.strike].putTheta += tex
         byStrike[r.strike].putOI    += oi
       }
     })
-    return Object.values(byStrike)
+    const result = Object.values(byStrike)
       .map(r => ({
         strike:      r.strike,
         netGEX:      +((r.callGEX - r.putGEX) / 1e6).toFixed(3),
         callGEX:     +(r.callGEX / 1e6).toFixed(3),
         putGEX:      +(-r.putGEX / 1e6).toFixed(3),
         dealerDelta: +((-(r.callDelta - r.putDelta)) / 1e6).toFixed(3),
+        netVega:     +((r.callVega + r.putVega) / 1e6).toFixed(3),
+        netTheta:    +((r.callTheta + r.putTheta) / 1e6).toFixed(3),
         callOI:      r.callOI,
         putOI:       r.putOI,
       }))
       .sort((a, b) => a.strike - b.strike)
+    if (result.length > 0) lastGoodChartData.current = result
+    return lastGoodChartData.current
   }, [allOiData, allGreeksData])
 
   function downloadCSV(data, filename) {
@@ -419,9 +515,16 @@ export default function Index() {
   }, [activeTab, gapDaysFilter])
 
   useEffect(() => {
-    if (activeTab === 'options') fetchOptionsData()
-    const interval = activeTab === 'options' ? setInterval(fetchOptionsData, 5000) : null
-    return () => { if (interval) clearInterval(interval) }
+    if (activeTab === 'options') {
+      fetchOptionsData()
+      fetchChartData()
+    }
+    const fastInterval = activeTab === 'options' ? setInterval(fetchOptionsData, 5000) : null
+    const slowInterval = activeTab === 'options' ? setInterval(fetchChartData, 60000) : null
+    return () => {
+      if (fastInterval) clearInterval(fastInterval)
+      if (slowInterval) clearInterval(slowInterval)
+    }
   }, [activeTab])
 
   async function fetchData() {
@@ -569,7 +672,7 @@ export default function Index() {
         const ts = latestTs[0].timestamp
         const { data: g, error: gErr } = await supabase
           .from('options_greeks_live')
-          .select('timestamp, expiration, strike, side, spot, iv, delta, gamma, ask_gamma, ask_delta, bid, ask, volume, dte_trading')
+          .select('timestamp, expiration, strike, side, spot, iv, delta, gamma, theta, vega, ask_gamma, ask_delta, ask_theta, ask_vega, bid, ask, volume, dte_trading')
           .eq('timestamp', ts)
           .not('ask_gamma', 'is', null)
           .order('ask_gamma', { ascending: false })
@@ -580,8 +683,17 @@ export default function Index() {
 
       setOiData(oi || [])
       setGreeksData(greeks)
+    } catch (err) {
+      console.error('Options fetch error:', err)
+    }
+    setOptionsLoading(false)
+  }
 
-      // Full datasets for dealer exposure charts (all strikes)
+  // Separate slower fetch for dealer exposure charts — no need to refresh every 5s
+  async function fetchChartData() {
+    try {
+      const today = new Date().toISOString().split('T')[0]
+
       const { data: allOi } = await supabase
         .from('options_oi_daily')
         .select('strike, side, open_interest')
@@ -590,22 +702,33 @@ export default function Index() {
         .not('open_interest', 'is', null)
         .gt('open_interest', 0)
 
+      const { data: latestTs } = await supabase
+        .from('options_greeks_live')
+        .select('timestamp')
+        .eq('snapshot_date', today)
+        .order('timestamp', { ascending: false })
+        .limit(1)
+
       let allG = []
       if (latestTs && latestTs.length > 0) {
         const ts2 = latestTs[0].timestamp
+
+        // Only re-fetch and re-render if the greeks timestamp has actually changed
+        if (ts2 === chartTimestampRef.current) return
+        chartTimestampRef.current = ts2
+
         const { data: gAll } = await supabase
           .from('options_greeks_live')
-          .select('strike, side, delta, gamma, spot')
+          .select('strike, side, delta, gamma, theta, vega, spot')
           .eq('timestamp', ts2)
         allG = gAll || []
       }
 
-      setAllOiData(allOi || [])
-      setAllGreeksData(allG)
+      if (allOi?.length) setAllOiData(allOi)
+      if (allG.length)   setAllGreeksData(allG)
     } catch (err) {
-      console.error('Options fetch error:', err)
+      console.error('Chart data fetch error:', err)
     }
-    setOptionsLoading(false)
   }
 
   function gapTypeColor(gapType) {
@@ -1424,7 +1547,7 @@ export default function Index() {
                       </div>
 
                       {/* ── Dealer Exposure Charts ── */}
-                      {exposureChartData.length > 0 && (() => {
+                      {(() => {
                         const nearStrikes = exposureChartData.filter(r =>
                           spot2 && Math.abs(r.strike - spot2) <= 20
                         )
@@ -1433,107 +1556,85 @@ export default function Index() {
                         return (
                           <div className="mb-8">
                             <h2 className="text-xl font-bold mb-1">Dealer Exposure Charts</h2>
-                            <p className="text-gray-400 text-sm mb-6">
-                              Computed from live greeks × OI. Spot ±20 strikes shown.
-                              Vega &amp; theta available once added to greeks schema.
-                            </p>
-
+                            <p className="text-gray-400 text-sm mb-6">Computed from live greeks × OI. Spot ±20 strikes shown.</p>
                             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
 
-                              {/* GEX */}
-                              <div className="bg-gray-800 rounded-lg p-5">
-                                <h3 className="font-bold text-white mb-0.5">Gamma Exposure (GEX)</h3>
-                                <p className="text-gray-400 text-xs mb-4">sensitivity of dealer delta to underlying price changes (×1M)</p>
-                                <ResponsiveContainer width="100%" height={240}>
-                                  <ComposedChart data={chartData} margin={{ top: 4, right: 8, left: 8, bottom: 4 }}>
-                                    <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
-                                    <XAxis dataKey="strike" tick={{ fill: '#9ca3af', fontSize: 10 }} tickFormatter={v => v.toFixed(0)} />
-                                    <YAxis tick={{ fill: '#9ca3af', fontSize: 10 }} />
-                                    <Tooltip
-                                      contentStyle={{ background: '#1f2937', border: '1px solid #374151', borderRadius: 6 }}
-                                      labelStyle={{ color: '#f9fafb', fontSize: 11 }}
-                                      itemStyle={{ fontSize: 11 }}
-                                      formatter={(v, n) => [v?.toFixed(3) + 'M', n]}
-                                    />
-                                    <Legend wrapperStyle={{ fontSize: 11 }} />
-                                    <Bar dataKey="callGEX" name="Call GEX" stackId="a" fill="#ef4444" radius={[0,0,0,0]} />
-                                    <Bar dataKey="putGEX"  name="Put GEX"  stackId="a" fill="#22c55e" radius={[2,2,0,0]} />
-                                    {spot2 && <ReferenceLine x={Math.round(spot2)} stroke="#60a5fa" strokeDasharray="4 3" label={{ value: `Spot ${spot2?.toFixed(2)}`, fill: '#60a5fa', fontSize: 10 }} />}
-                                  </ComposedChart>
-                                </ResponsiveContainer>
-                              </div>
+                              <DealerChart
+                                title="Gamma Exposure (GEX)"
+                                caption="sensitivity of dealer delta to underlying price changes (×1M)"
+                                chartData={chartData} spot={spot2}
+                                config={{
+                                  legend: true,
+                                  tooltipFmt: (v, l) => `${l}: ${v?.toFixed(3)}M`,
+                                  datasets: [
+                                    { key: 'callGEX',  label: 'Call GEX', color: '#ef4444' },
+                                    { key: 'putGEX',   label: 'Put GEX',  color: '#22c55e' },
+                                  ]
+                                }}
+                              />
 
-                              {/* Net GEX */}
-                              <div className="bg-gray-800 rounded-lg p-5">
-                                <h3 className="font-bold text-white mb-0.5">Net GEX by Strike</h3>
-                                <p className="text-gray-400 text-xs mb-4">call GEX minus put GEX — positive = dealers long gamma, suppresses moves (×1M)</p>
-                                <ResponsiveContainer width="100%" height={240}>
-                                  <ComposedChart data={chartData} margin={{ top: 4, right: 8, left: 8, bottom: 4 }}>
-                                    <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
-                                    <XAxis dataKey="strike" tick={{ fill: '#9ca3af', fontSize: 10 }} tickFormatter={v => v.toFixed(0)} />
-                                    <YAxis tick={{ fill: '#9ca3af', fontSize: 10 }} />
-                                    <Tooltip
-                                      contentStyle={{ background: '#1f2937', border: '1px solid #374151', borderRadius: 6 }}
-                                      labelStyle={{ color: '#f9fafb', fontSize: 11 }}
-                                      formatter={(v, n) => [v?.toFixed(3) + 'M', n]}
-                                    />
-                                    <Bar dataKey="netGEX" name="Net GEX" radius={[2,2,0,0]}>
-                                      {chartData.map((entry, i) => (
-                                        <Cell key={i} fill={entry.netGEX >= 0 ? '#f9a8d4' : '#6ee7b7'} />
-                                      ))}
-                                    </Bar>
-                                    <ReferenceLine y={0} stroke="#6b7280" />
-                                    {spot2 && <ReferenceLine x={Math.round(spot2)} stroke="#60a5fa" strokeDasharray="4 3" label={{ value: `Spot ${spot2?.toFixed(2)}`, fill: '#60a5fa', fontSize: 10 }} />}
-                                  </ComposedChart>
-                                </ResponsiveContainer>
-                              </div>
+                              <DealerChart
+                                title="Net GEX by Strike"
+                                caption="positive = dealers long gamma, suppresses moves (×1M)"
+                                chartData={chartData} spot={spot2}
+                                config={{
+                                  tooltipFmt: (v) => `Net GEX: ${v?.toFixed(3)}M`,
+                                  datasets: [
+                                    { key: 'netGEX', label: 'Net GEX', color: v => v >= 0 ? '#f9a8d4' : '#6ee7b7' },
+                                  ]
+                                }}
+                              />
 
-                              {/* Dealer Delta */}
-                              <div className="bg-gray-800 rounded-lg p-5">
-                                <h3 className="font-bold text-white mb-0.5">Dealer Delta Exposure</h3>
-                                <p className="text-gray-400 text-xs mb-4">sensitivity of dealer book to price — inverted from client side (×1M)</p>
-                                <ResponsiveContainer width="100%" height={240}>
-                                  <ComposedChart data={chartData} margin={{ top: 4, right: 8, left: 8, bottom: 4 }}>
-                                    <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
-                                    <XAxis dataKey="strike" tick={{ fill: '#9ca3af', fontSize: 10 }} tickFormatter={v => v.toFixed(0)} />
-                                    <YAxis tick={{ fill: '#9ca3af', fontSize: 10 }} />
-                                    <Tooltip
-                                      contentStyle={{ background: '#1f2937', border: '1px solid #374151', borderRadius: 6 }}
-                                      labelStyle={{ color: '#f9fafb', fontSize: 11 }}
-                                      formatter={(v, n) => [v?.toFixed(3) + 'M', n]}
-                                    />
-                                    <Bar dataKey="dealerDelta" name="Dealer Δ" radius={[2,2,0,0]}>
-                                      {chartData.map((entry, i) => (
-                                        <Cell key={i} fill={entry.dealerDelta >= 0 ? '#4ade80' : '#f87171'} />
-                                      ))}
-                                    </Bar>
-                                    <ReferenceLine y={0} stroke="#6b7280" />
-                                    {spot2 && <ReferenceLine x={Math.round(spot2)} stroke="#60a5fa" strokeDasharray="4 3" label={{ value: `Spot ${spot2?.toFixed(2)}`, fill: '#60a5fa', fontSize: 10 }} />}
-                                  </ComposedChart>
-                                </ResponsiveContainer>
-                              </div>
+                              <DealerChart
+                                title="Dealer Delta Exposure"
+                                caption="inverted from client side — green = dealers long delta (×1M)"
+                                chartData={chartData} spot={spot2}
+                                config={{
+                                  tooltipFmt: (v) => `Dealer Δ: ${v?.toFixed(3)}M`,
+                                  datasets: [
+                                    { key: 'dealerDelta', label: 'Dealer Δ', color: v => v >= 0 ? '#4ade80' : '#f87171' },
+                                  ]
+                                }}
+                              />
 
-                              {/* OI by Strike */}
-                              <div className="bg-gray-800 rounded-lg p-5">
-                                <h3 className="font-bold text-white mb-0.5">Open Interest by Strike</h3>
-                                <p className="text-gray-400 text-xs mb-4">calls (red) vs puts (green) — high OI = pinning magnet</p>
-                                <ResponsiveContainer width="100%" height={240}>
-                                  <ComposedChart data={chartData} margin={{ top: 4, right: 8, left: 8, bottom: 4 }}>
-                                    <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
-                                    <XAxis dataKey="strike" tick={{ fill: '#9ca3af', fontSize: 10 }} tickFormatter={v => v.toFixed(0)} />
-                                    <YAxis tick={{ fill: '#9ca3af', fontSize: 10 }} tickFormatter={v => (v/1000).toFixed(0) + 'k'} />
-                                    <Tooltip
-                                      contentStyle={{ background: '#1f2937', border: '1px solid #374151', borderRadius: 6 }}
-                                      labelStyle={{ color: '#f9fafb', fontSize: 11 }}
-                                      formatter={(v, n) => [v?.toLocaleString(), n]}
-                                    />
-                                    <Legend wrapperStyle={{ fontSize: 11 }} />
-                                    <Bar dataKey="callOI" name="Call OI" fill="#ef4444" opacity={0.8} radius={[0,0,0,0]} />
-                                    <Bar dataKey="putOI"  name="Put OI"  fill="#22c55e" opacity={0.8} radius={[2,2,0,0]} />
-                                    {spot2 && <ReferenceLine x={Math.round(spot2)} stroke="#60a5fa" strokeDasharray="4 3" label={{ value: `Spot`, fill: '#60a5fa', fontSize: 10 }} />}
-                                  </ComposedChart>
-                                </ResponsiveContainer>
-                              </div>
+                              <DealerChart
+                                title="Open Interest by Strike"
+                                caption="calls (red) vs puts (green) — high OI = pinning magnet"
+                                chartData={chartData} spot={spot2}
+                                config={{
+                                  legend: true,
+                                  tooltipFmt: (v, l) => `${l}: ${v?.toLocaleString()}`,
+                                  yFmt: v => (v / 1000).toFixed(0) + 'k',
+                                  datasets: [
+                                    { key: 'callOI', label: 'Call OI', color: 'rgba(239,68,68,0.8)' },
+                                    { key: 'putOI',  label: 'Put OI',  color: 'rgba(34,197,94,0.8)' },
+                                  ]
+                                }}
+                              />
+
+                              <DealerChart
+                                title="Dealer Vega Exposure"
+                                caption="negative = dealers short vol, buying pressure raises IV (×1M)"
+                                chartData={chartData} spot={spot2}
+                                config={{
+                                  tooltipFmt: (v) => `Net Vega: ${v?.toFixed(3)}M`,
+                                  datasets: [
+                                    { key: 'netVega', label: 'Net Vega', color: v => v >= 0 ? '#a78bfa' : '#c4b5fd' },
+                                  ]
+                                }}
+                              />
+
+                              <DealerChart
+                                title="Dealer Theta Exposure"
+                                caption="negative = dealers paying theta, time decay works against them (×1M)"
+                                chartData={chartData} spot={spot2}
+                                config={{
+                                  tooltipFmt: (v) => `Net Theta: ${v?.toFixed(3)}M`,
+                                  datasets: [
+                                    { key: 'netTheta', label: 'Net Theta', color: v => v >= 0 ? '#fb923c' : '#fed7aa' },
+                                  ]
+                                }}
+                              />
 
                             </div>
                           </div>
@@ -1632,6 +1733,8 @@ export default function Index() {
                           <th className="text-right p-2 text-gray-400 text-xs">IV</th>
                           <th className="text-right p-2 text-gray-400 text-xs">Delta</th>
                           <th className="text-right p-2 text-gray-400 text-xs">Gamma</th>
+                          <th className="text-right p-2 text-gray-400 text-xs">Theta</th>
+                          <th className="text-right p-2 text-gray-400 text-xs">Vega</th>
                           <th className="text-right p-2 text-gray-400 text-xs">Ask Gamma</th>
                           <th className="text-right p-2 text-gray-400 text-xs">Volume</th>
                         </tr>
@@ -1660,6 +1763,12 @@ export default function Index() {
                             </td>
                             <td className="text-right p-2 text-xs text-yellow-300">
                               {row.gamma?.toFixed(4) ?? '—'}
+                            </td>
+                            <td className="text-right p-2 text-xs text-orange-300">
+                              {row.theta?.toFixed(4) ?? '—'}
+                            </td>
+                            <td className="text-right p-2 text-xs text-purple-300">
+                              {row.vega?.toFixed(4) ?? '—'}
                             </td>
                             <td className="text-right p-2 text-xs font-bold text-orange-300">
                               {row.ask_gamma?.toFixed(4) ?? '—'}
